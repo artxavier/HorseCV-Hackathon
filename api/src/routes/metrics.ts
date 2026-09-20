@@ -57,7 +57,9 @@ export default async function metrics(app: FastifyInstance): Promise<void> {
                 AVG(rtt_ms)           AS avg_rtt_ms,
                 AVG(payload_bytes)    AS avg_payload_bytes,
                 SUM(payload_bytes)    AS total_bytes,
-                AVG(fallback) * 100.0 AS fallback_pct
+                AVG(fallback) * 100.0 AS fallback_pct,
+                MIN(ts)               AS first_ts,
+                MAX(ts)               AS last_ts
            FROM metrics WHERE ts >= ? GROUP BY mode`,
       )
       .all(cutoff);

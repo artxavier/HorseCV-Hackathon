@@ -78,6 +78,12 @@ def run(args: argparse.Namespace) -> None:
 
     slots_raw = load_slots(args.slots)
     cap = open_source(args.source)
+    is_camera = args.source.isdigit()
+    # Num arquivo, os frames chegam tao rapido quanto o disco entrega: se consumirmos
+    # um por iteracao o video roda em camera lenta e o debounce (que conta segundos de
+    # relogio) deixa de corresponder ao que foi gravado. Descartamos frames para manter
+    # o tempo do video colado no tempo real, que e o que uma camera faria sozinha.
+    src_fps = 0.0 if is_camera else float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
 
     state: Optional[SlotStateMachine] = None
     slots_cfg = None
@@ -92,10 +98,16 @@ def run(args: argparse.Namespace) -> None:
     while True:
         ok, frame = cap.read()
         if not ok:
-            if args.source.isdigit():
+            if is_camera:
                 log.error("camera parou de entregar frames")
                 break
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # video em loop (plano B da demo)
+            if args.no_loop:
+                log.info("fim do video")
+                break
+            # video em loop (plano B da demo). O estado NAO e reiniciado: o rack volta a
+            # aparecer vazio e a maquina de estados emite a retirada sozinha, fechando a
+            # sessao antes de comecar o ciclo seguinte.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             continue
 
         now = time.time()
@@ -206,6 +218,10 @@ def run(args: argparse.Namespace) -> None:
 
         # ---- ritmo alvo
         target_fps = float(cfg.get("target_fps", 3)) or 3.0
+        if src_fps > target_fps:
+            for _ in range(int(round(src_fps / target_fps)) - 1):
+                if not cap.grab():
+                    break
         sleep_for = (1.0 / target_fps) - (time.time() - now)
         if sleep_for > 0:
             time.sleep(sleep_for)
@@ -257,6 +273,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--slots", default=DEFAULT_SLOTS)
     ap.add_argument("--edge-url", default="http://localhost:8001", help="servidor de inferencia local")
     ap.add_argument("--show", action="store_true", help="abre uma janela com o overlay")
+    ap.add_argument("--no-loop", action="store_true", help="para no fim do video em vez de repetir")
     args = ap.parse_args(argv)
     try:
         run(args)

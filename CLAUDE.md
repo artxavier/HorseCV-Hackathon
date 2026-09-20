@@ -381,3 +381,39 @@ dispositivo exceto em eventos. Em produção: sinalização no local, base legal
   `fallback=1` marca que o modo escolhido falhou. A página de Métricas mostra a % de fallback.
 - **Pesos fora do repositório**: `yolo26n-seg.pt` em `vision/models/`, RF-DETR em `~/.roboflow/models/`,
   buffalo_s em `~/.insightface/models/`. `vision/samples/` é a única pasta de imagens versionada.
+
+- **2026-09-20 — Primeiro teste com os vídeos reais (`samples/Insercao_P1`, `Remocao_P1`, `Remocao_P2`).**
+  Três tomadas de 14 s a 1024×576, ~30 fps. A `Remoção_P2` foi filmada com a bike numa vaga
+  diferente das outras duas, então os pares *mesma vaga* possíveis são Inserção_P1 + Remoção_P1.
+  - **`config/slots.json` agora é a geometria real** do rack: 6 vãos entre os 7 montantes
+    (x = 133, 283, 432, 577, 723, 866, 1008 px; y = 330 a 545). Inserção/Remoção_P1 caem na **S3**,
+    Remoção_P2 na **S2**. Cobertura medida com a bike estacionada: 0.30–0.41 na vaga certa, 0.00
+    nas outras — o limiar de 0.25 tem folga, mas não muita.
+  - **A ROI default cortava a cena.** Neste enquadramento a cabeça de quem empurra a bike encosta
+    no topo do frame e as rodas vão até ~95% da altura: `roi` virou `[0,0,1,1]`. Se a câmera final
+    ficar mais longe, dá para voltar a cortar.
+  - **YOLO26n-seg com pesos COCO não serve para o edge nesta cena.** Vê a bike em 55% dos frames
+    (rfdetr: 96%), a vaga nunca chega aos 70% da janela e **nenhum evento é emitido**. Com
+    `imgsz=960` + `bike_conf=0.15` sobe para 75% e os eventos saem, mas nos instantes errados
+    (o depósito foi reconhecido ~12 s atrasado, segundos antes da retirada real). `detector.edge`
+    passou a `rfdetr` até os pesos com fine-tuning chegarem — é exatamente esse o problema que o
+    fine-tuning precisa resolver.
+  - **Limiar facial recalibrado.** `scripts/calibrate.py` nos três vídeos: 97 pares genuínos
+    (média 0.252) × 56 impostores (média 0.076, **máx 0.251**), sugestão par a par **0.18**.
+    A decisão real usa o máximo dos pares, que mediu **0.32–0.34** (mesma pessoa) contra **0.15**
+    (pessoas diferentes). `similarity_threshold` foi de 0.30 para **0.23**. A margem é estreita e
+    há só 2 pessoas na amostra — recalibrar com mais gente. Histograma em `samples/calibracao.png`.
+  - **Rostos**: 73 rostos válidos nos 129 frames amostrados, score médio 0.65, lado médio **42 px**
+    (mín 22, máx 55) — coerente com o previsto no §4.1 para o ângulo frontal.
+  - **Agente em arquivo de vídeo rodava em câmera lenta.** Consumia um frame por iteração, então um
+    clipe de 14 s levava 2m21s a 3 FPS e o debounce (que conta segundos de relógio) não correspondia
+    ao que foi gravado. Agora descarta `src_fps/target_fps - 1` frames por iteração. Novo
+    `--no-loop` para parar no fim do arquivo, e o loop **não** reinicia mais a máquina de estados
+    (o rack reaparece vazio e a retirada sai sozinha, fechando a sessão a cada ciclo).
+  - **`GET /api/cameras/:id/frame.jpg` só lia da memória**, apesar do comentário dizendo que o disco
+    existia para sobreviver a um restart. Depois de reiniciar a api o Dashboard ficava com a imagem
+    quebrada. Agora cai para `data/frames/<id>.jpg`.
+  - **A coluna FPS da página de Métricas mostrava `1000/rtt`** (19.7) — o teto que a inferência
+    permitiria, não o ritmo real de captura. Passou a ser `frames / (último_ts − primeiro_ts)`,
+    com `first_ts`/`last_ts` novos no resumo de `/api/metrics`.
+  - **As cinco páginas foram verificadas no navegador** (headless Chrome), não só pelo build.

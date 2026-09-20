@@ -59,6 +59,8 @@ export interface MetricSummary {
   avg_payload_bytes: number | null;
   total_bytes: number | null;
   fallback_pct: number | null;
+  first_ts: number | null;
+  last_ts: number | null;
 }
 
 export type Mode = "edge" | "fog" | "cloud";

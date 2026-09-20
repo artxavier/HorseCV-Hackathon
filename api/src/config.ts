@@ -8,13 +8,19 @@ export const DEFAULT_CONFIG = {
     fog: "http://192.168.0.10:8001",
     cloud: "https://bikeguard.example.run.app",
   },
-  detector: { edge: "yolo26", fog: "rfdetr", cloud: "rfdetr" },
+  // Medido nos videos de samples/: com os pesos COCO o yolo26n-seg so ve a bike em 55%
+  // dos frames e a vaga nunca chega aos 70% da janela -- nenhum evento e emitido. Ate os
+  // pesos com fine-tuning chegarem, o edge tambem roda rfdetr. (CLAUDE.md, Decisoes tomadas)
+  detector: { edge: "rfdetr", fog: "rfdetr", cloud: "rfdetr" },
   // so para a grade do Dashboard; a verdade sobre as vagas esta em vision/config/slots.json
   slot_ids: ["S1", "S2", "S3", "S4", "S5", "S6"],
   target_fps: 3,
   jpeg_quality: 75,
   infer_width: 640,
-  roi: [0.0, 0.15, 1.0, 0.8],
+  // Enquadramento de samples/: a cabeca de quem empurra a bike encosta no topo do frame e
+  // as rodas vao ate ~95% da altura, entao nao sobra margem para cortar. Reduza a ROI se a
+  // camera final for montada mais longe.
+  roi: [0.0, 0.0, 1.0, 1.0],
   occupancy_threshold: 0.25,
   debounce_seconds: 3,
   face_window_seconds: 15,
@@ -25,7 +31,10 @@ export const DEFAULT_CONFIG = {
   face_min_score: 0.5,
   face_min_px: 20,
   top_k: 5,
-  similarity_threshold: 0.3,
+  // scripts/calibrate.py nos videos de samples/: 97 pares genuinos x 56 impostores sugerem
+  // 0.18 par a par. A decisao real usa o MAXIMO dos pares, que mediu 0.32-0.34 (mesma pessoa)
+  // contra 0.15 (pessoas diferentes) -- 0.23 fica no meio. Recalibrar com mais gente.
+  similarity_threshold: 0.23,
   retention_hours: 24,
   timeout_ms: 2000,
 };

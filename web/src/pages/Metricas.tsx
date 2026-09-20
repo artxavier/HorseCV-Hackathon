@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api, fmtBytes, usePolling } from "../api.ts";
+import { api, fmtBytes, usePolling, type MetricSummary } from "../api.ts";
 
 const JANELAS = [
   { value: 120, label: "2 min" },
@@ -18,6 +18,14 @@ const JANELAS = [
 ];
 
 const CORES: Record<string, string> = { edge: "#34d399", fog: "#60a5fa", cloud: "#f59e0b" };
+
+/** FPS real: frames dividido pelo tempo que eles levaram. Nao confundir com 1000/rtt,
+ *  que e o teto que a inferencia permitiria, nao o ritmo em que o agente captura. */
+function fps(s: MetricSummary): string {
+  const span = (s.last_ts ?? 0) - (s.first_ts ?? 0);
+  if (!(span > 0) || s.frames < 2) return "-";
+  return ((s.frames - 1) / span).toFixed(1);
+}
 
 export default function Metricas() {
   const [janela, setJanela] = useState(600);
@@ -116,7 +124,7 @@ export default function Metricas() {
                 <td className="px-3 py-2">{s.frames}</td>
                 <td className="px-3 py-2">{s.avg_inference_ms?.toFixed(0) ?? "-"} ms</td>
                 <td className="px-3 py-2">{s.avg_rtt_ms?.toFixed(0) ?? "-"} ms</td>
-                <td className="px-3 py-2">{s.avg_rtt_ms ? (1000 / s.avg_rtt_ms).toFixed(1) : "-"}</td>
+                <td className="px-3 py-2">{fps(s)}</td>
                 <td className="px-3 py-2">{fmtBytes(s.avg_payload_bytes)}</td>
                 <td className="px-3 py-2">{fmtBytes(s.total_bytes)}</td>
                 <td className="px-3 py-2">{s.fallback_pct?.toFixed(1) ?? "0.0"}%</td>

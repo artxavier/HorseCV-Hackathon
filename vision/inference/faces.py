@@ -34,14 +34,19 @@ MODELS_DIR = os.getenv("MODELS_DIR", os.path.join(os.path.dirname(os.path.dirnam
 # backends
 # --------------------------------------------------------------------------- #
 class InsightFaceBackend:
-    name = "insightface-buffalo_s"
+    """Pacote de modelos escolhido por INSIGHTFACE_PACK. buffalo_s (SCRFD-500M +
+    MobileFaceNet, 16 MB) e o padrao; buffalo_l (SCRFD-10G + ResNet50, 300 MB) e
+    bem mais preciso e so faz sentido onde houver GPU. Trocar o pacote muda o
+    espaco dos embeddings: recalibre o limiar depois."""
 
     def __init__(self, device: str = "cpu"):
         from insightface.app import FaceAnalysis
 
+        pack = os.getenv("INSIGHTFACE_PACK", "buffalo_s")
+        self.name = f"insightface-{pack}"
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if device != "cpu" else ["CPUExecutionProvider"]
         self.app = FaceAnalysis(
-            name="buffalo_s",
+            name=pack,
             allowed_modules=["detection", "recognition"],
             providers=providers,
         )
