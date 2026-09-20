@@ -1,0 +1,24 @@
+# --- base ---
+numpy==2.5.3
+opencv-python==5.0.0.93
+Pillow==12.3.0
+PyYAML==6.0.3
+requests==2.34.2
+matplotlib==3.11.2
+
+# --- deteccao / segmentacao ---
+# yolo26n-seg (padrao no edge)
+ultralytics==8.4.157
+# RF-DETR-Seg Nano (padrao no fog/cloud) -- baixa os pesos sozinho no 1o uso
+rfdetr
+
+# --- rostos ---
+# backend padrao: insightface buffalo_s (SCRFD-500M + MobileFaceNet)
+# se o build falhar (Python 3.12), usar FACE_BACKEND=opencv (YuNet + SFace, ja vem no opencv)
+insightface
+onnxruntime
+
+# --- servidor de inferencia ---
+fastapi
+uvicorn[standard]
+python-multipart
