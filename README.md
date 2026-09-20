@@ -20,6 +20,7 @@ As regras de projeto e os números medidos em campo estão em [`CLAUDE.md`](CLAU
 - [Pipeline de processamento](#pipeline-de-processamento)
 - [Estrutura dos arquivos](#estrutura-dos-arquivos)
 - [Como rodar](#como-rodar)
+- [Limpar o banco de dados](#limpar-o-banco-de-dados)
 - [Flags e variáveis de ambiente](#flags-e-variáveis-de-ambiente)
 - [Privacidade (LGPD)](#privacidade-lgpd)
 - [Estado atual](#estado-atual)
@@ -59,9 +60,11 @@ Três decisões que definem o resto do sistema:
 2. **O detector de rosto nunca vê o frame inteiro.** Os rostos nessa cena têm 20–45 px. O SCRFD
    redimensiona a entrada para 640 e os apagaria. O pipeline obrigatório é recortar a pessoa
    primeiro (detalhado abaixo).
-3. **A comparação usa vários rostos de cada lado.** Similaridade = **máximo** do cosseno entre
-   todos os pares depósito × retirada, com até 5 rostos de cada. Um frame ruim (cabeça baixa ao
-   encaixar a bike, borrado) não vira alerta falso sozinho.
+3. **A comparação usa vários rostos de cada lado.** Cada lado vira um *template* — a média dos
+   até 5 embeddings normalizados — e a similaridade é um único cosseno entre os dois templates.
+   Assim um frame ruim (cabeça baixa ao encaixar a bike, borrado) é diluído em vez de decidir
+   sozinho. (Era o máximo entre todos os pares; medido nos vídeos, o máximo separava mal — um
+   único par com sorte puxava o impostor para cima.)
 
 ---
 
@@ -197,7 +200,7 @@ flowchart TB
     D2 --> D3["cria sessão <b>parked</b><br/>salva embeddings + 2 fotos"]
 
     EV -->|withdrawal| W1["busca a sessão parked da vaga"]
-    W1 --> W2["similarity = <b>máximo</b> do cosseno<br/>entre todos os pares depósito × retirada"]
+    W1 --> W2["similarity = cosseno entre o<br/><b>template</b> do depósito e o da retirada<br/>(média dos embeddings de cada lado)"]
     W2 --> W3{"motivo"}
     W3 -->|"rosto ausente em um dos lados"| AL["status <b>alert</b><br/>+ linha em alerts<br/>com o reason"]
     W3 -->|"similarity < threshold"| AL
@@ -362,6 +365,58 @@ curl -F image=@vision/samples/frame.jpg 'http://localhost:8001/infer?faces=true&
 curl http://localhost:8001/health
 ```
 
+### Limpar o banco de dados
+
+Tudo que a api guarda vive em **`api/data/`** — nada fica em outro lugar:
+
+```
+api/data/
+├── bikeguard.db        # sessões, alertas, eventos, métricas, config
+├── bikeguard.db-wal    # ← journal do SQLite; conta como parte do banco
+├── bikeguard.db-shm    # ←
+├── faces/              # os recortes de rosto (servidos em /files/)
+└── frames/             # o último frame anotado de cada câmera
+```
+
+**Pare a api antes de apagar.** O `better-sqlite3` mantém o arquivo aberto: se você apagar com o
+servidor no ar, o processo continua escrevendo no arquivo já removido, a api parece funcionar e as
+fotos novas somem sem erro nenhum. Não é hipotético — foi assim que apareceu um alerta sem foto
+durante os testes.
+
+Apagar tudo e começar do zero:
+
+```bash
+# 1. pare a api (Ctrl+C no terminal dela)
+cd api && npm run reset     # equivale a: rm -rf data
+npm run dev                 # o schema é recriado sozinho no boot
+```
+
+Se preferir limpar só as tabelas e manter o arquivo (precisa do `sqlite3` instalado):
+
+```bash
+cd api
+sqlite3 data/bikeguard.db "DELETE FROM sessions; DELETE FROM alerts; DELETE FROM events; DELETE FROM metrics;"
+rm -f data/faces/*.jpg data/frames/*.jpg
+```
+
+Note que isso **preserva a config** (a tabela `config`), que é o que você costuma querer: zerar o
+histórico da demo sem perder modo, URLs e limiares. Para zerar a config também, acrescente
+`DELETE FROM config;` — ela volta aos defaults do `api/src/config.ts` na próxima leitura.
+
+Limpezas mais cirúrgicas, com a api no ar:
+
+```bash
+# só as métricas (o gráfico fica poluído depois de muitos testes)
+sqlite3 api/data/bikeguard.db "DELETE FROM metrics;"
+
+# só marcar os alertas abertos como verificados, sem apagar nada
+curl -X POST http://localhost:3000/api/alerts/<id>/ack
+```
+
+A api também faz uma limpeza automática sozinha: fotos de sessões `ok` e `orphan` mais velhas que
+`retention_hours` (24 h por padrão) são apagadas no boot e de hora em hora. Isso é a retenção da
+LGPD, não um substituto para o reset — sessões `alert` são preservadas.
+
 ### Modo cloud
 
 ```bash
@@ -421,6 +476,7 @@ Teclas: clique adiciona um vértice · `n` fecha a vaga atual e começa a próxi
 | `YOLO_WEIGHTS` | `models/yolo26n-seg.pt` | **É aqui que entram os pesos com fine-tuning.** Aponte para o novo `.pt` e nada mais no pipeline muda. |
 | `MODELS_DIR` | `vision/models` | Onde procurar os pesos locais. |
 | `FACE_BACKEND` | `insightface` | `opencv` cai para YuNet + SFace (128-d), que vem no próprio opencv-python. Só use se o insightface não instalar. |
+| `INSIGHTFACE_PACK` | `buffalo_l` | Pacote de modelos de rosto. `buffalo_l` (SCRFD-10G + ResNet50, 300 MB) é o padrão: quase **triplica** a separação entre a pessoa certa e a errada, ao custo de 101 ms/frame contra 45 ms na GPU. Em CPU fraca use `buffalo_s` (16 MB) — e **baixe o `similarity_threshold` para 0.31**, porque a escala do cosseno muda com o pacote. |
 | `DEVICE` | auto | `cpu`, `cuda`, `cuda:0`. |
 | `DEVICE_LABEL` | auto | Texto que aparece no `/health` e nas métricas (ex. `rpi5-cpu`, `laptop-cuda`). É o que identifica o modo nos gráficos da apresentação. |
 
@@ -435,8 +491,9 @@ Query params do `POST /infer`: `faces` (default `true`), `detector`, `bike_conf`
 | `DATA_DIR` | `api/data` | api — banco e imagens |
 | `VITE_API_TARGET` | `http://localhost:3000` | web — alvo do proxy `/api` e `/files` |
 
-Scripts npm: `npm run dev` (watch), `npm start` (api, sem watch),
-`npm run build` / `npm run preview` (web), `npm run typecheck` (ambos).
+Scripts npm: `npm run dev` (watch), `npm start` (api, sem watch), `npm run reset` (api, apaga
+`data/` — ver [Limpar o banco de dados](#limpar-o-banco-de-dados)), `npm run build` /
+`npm run preview` (web), `npm run typecheck` (ambos).
 
 ---
 
@@ -478,7 +535,8 @@ E com a pessoa errada retirando (P1 deixou, P2 levou): similaridade **0.151** �
 | Cobertura da vaga com a bike estacionada | 0.30–0.41 na vaga certa, 0.00 nas outras (limiar 0.25) |
 | Agente | 45 ms de inferência, 51 ms de RTT, **138 KB/frame** (~0.41 MB/s a 3 FPS) |
 | Fallback com o fog derrubado | 41/41 frames refeitos no edge, `fallback_pct` 100 |
-| Limiar facial | genuínos 0.32–0.34 × impostores 0.15 → `similarity_threshold` **0.23** |
+| Limiar facial (template + buffalo_l, o padrão) | genuínos 0.525–0.710 × impostores 0.089–0.237 → `similarity_threshold` **0.38** |
+| Limiar facial (template + buffalo_s) | genuínos 0.371–0.510 × impostores 0.101–0.254 → limiar **0.31** |
 
 **O modo edge não fecha com os pesos COCO.** O YOLO26n-seg perde a bicicleta em 45% dos frames,
 a vaga nunca alcança os 70% da janela de debounce e **nenhum evento é emitido**. Subir para

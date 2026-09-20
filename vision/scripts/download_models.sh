@@ -24,19 +24,23 @@ RFDETRSegNano()
 print("    ok")
 PY
 
-echo "==> InsightFace buffalo_s (SCRFD-500M + MobileFaceNet)"
-# baixa para ~/.insightface/models/buffalo_s
-"$PY" - <<'PY'
+# buffalo_l e o padrao (INSIGHTFACE_PACK); buffalo_s fica como alternativa para CPU fraca.
+for pack in ${INSIGHTFACE_PACKS:-buffalo_l buffalo_s}; do
+  echo "==> InsightFace $pack"
+  # baixa para ~/.insightface/models/$pack
+  "$PY" -c "
+import sys
 from insightface.app import FaceAnalysis
-app = FaceAnalysis(name="buffalo_s", allowed_modules=["detection", "recognition"])
+app = FaceAnalysis(name=sys.argv[1], allowed_modules=['detection', 'recognition'])
 app.prepare(ctx_id=-1, det_size=(640, 640))
-print("    ok")
-PY
-# os .onnx de landmark 3D / genderage nao sao usados -- fora daqui (licenca/espaco)
-BUFFALO="$HOME/.insightface/models/buffalo_s"
-if [ -d "$BUFFALO" ]; then
-  rm -f "$BUFFALO"/1k3d68.onnx "$BUFFALO"/2d106det.onnx "$BUFFALO"/genderage.onnx || true
-fi
+print('    ok')
+" "$pack"
+  # os .onnx de landmark 3D / genderage nao sao usados -- fora daqui (licenca/espaco)
+  BUFFALO="$HOME/.insightface/models/$pack"
+  if [ -d "$BUFFALO" ]; then
+    rm -f "$BUFFALO"/1k3d68.onnx "$BUFFALO"/2d106det.onnx "$BUFFALO"/genderage.onnx || true
+  fi
+done
 
 echo "==> Fallback OpenCV (YuNet + SFace) -- usado se FACE_BACKEND=opencv"
 ZOO=https://github.com/opencv/opencv_zoo/raw/main

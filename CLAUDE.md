@@ -88,11 +88,12 @@ contrato HTTP) roda em três lugares, e o agente escolhe a URL conforme o modo c
 | Tarefa | Modelo | Por quê |
 |---|---|---|
 | Pessoas + bikes | **YOLO26n-seg** (Ultralytics, COCO: `person`=0, `bicycle`=1) | Nano roda no Pi 5 na CPU; máscara separa bikes encostadas melhor que bbox |
-| Detecção de rosto | **SCRFD-500M** (`det_500m.onnx`, pacote InsightFace `buffalo_s`) | 2.5 MB, onnxruntime; **validado nas fotos reais do bicicletário** |
-| Embedding facial | **MobileFaceNet** (`w600k_mbf.onnx`, 512-d, mesmo pacote) | 13 MB, ArcFace-style; validado nas fotos reais |
+| Detecção de rosto | **SCRFD-10G** (pacote InsightFace `buffalo_l`) | padrão; com `buffalo_s` (SCRFD-500M, 2.5 MB) a margem cai pela metade |
+| Embedding facial | **ResNet50 ArcFace** (`w600k_r50.onnx`, 512-d, mesmo pacote) | margem +0.288 contra +0.117 do MobileFaceNet nos vídeos reais |
 
-Uso: `pip install insightface onnxruntime` e `FaceAnalysis(name='buffalo_s', allowed_modules=['detection','recognition'])`.
-Pesos: `https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip` (apagar os .onnx de
+Uso: `pip install insightface onnxruntime` e `FaceAnalysis(name='buffalo_l', allowed_modules=['detection','recognition'])`,
+ou `INSIGHTFACE_PACK=buffalo_s` onde não houver GPU (aí o limiar desce de 0.38 para 0.31).
+Pesos: os `.zip` de `https://github.com/deepinsight/insightface/releases` (apagar os .onnx de
 landmark 3D / genderage, não são usados). Licença dos pesos é não comercial — ok para hackathon.
 Fallback se o insightface não instalar no Pi: YuNet + SFace do OpenCV Zoo (mesmo pipeline, limiar diferente).
 
@@ -134,8 +135,9 @@ Pesos RF-DETR: `RFDETRSegNano()` do pacote `rfdetr` (baixa de `storage.googleapi
   → SCRFD + embedding. No teste isso subiu a similaridade mínima entre fotos da mesma pessoa de 0.05 para 0.21.
 - Rosto só vale se: score SCRFD ≥ 0.5 e lado do rosto ≥ 20 px **no frame original**. (Os scores nas fotos reais
   ficaram entre 0.5 e 0.85; um corte em 0.8 descartaria quase tudo.)
-- **Limiar inicial**: cosine ≥ 0.30 = mesma pessoa. É um chute informado e **precisa ser calibrado** (ver §10, passo 2b).
-  Deixar configurável no site.
+- **Limiar**: cosine ≥ **0.38** = mesma pessoa, com `buffalo_l` + template (0.31 com `buffalo_s`).
+  Calibrado nos vídeos de `samples/`, mas com só 2 atores — recalibrar com mais gente (§10, passo 2b).
+  Configurável no site.
 
 ## 4.1 Cena e câmera (validado com 18 fotos reais do local)
 
@@ -215,8 +217,11 @@ maior `quality`** para aquela vaga, contando a janela desde **antes** do início
 - `deposit`: `{ camera_id, slot_id, ts, embeddings: number[][] (até top_k), face_jpg_b64 | null (melhor rosto), frame_jpg_b64 }`
 - `withdrawal`: mesmo formato.
 
-**Comparação** (na api): similaridade = **máximo** do cosseno entre todos os pares (depósito × retirada).
-Com vários rostos de cada lado, um único frame ruim (cabeça baixa, borrado) não gera alerta falso.
+**Comparação** (na api): cada lado vira um **template** — a média dos até `top_k` embeddings
+normalizados, renormalizada — e a similaridade é um único cosseno entre os dois templates.
+Assim um frame ruim (cabeça baixa, borrado) é diluído na média em vez de decidir sozinho.
+Era o **máximo** entre todos os pares; medido nos vídeos reais, o máximo separava mal, porque
+pescava o melhor de até 25 comparações ruidosas e isso levantava o impostor junto com o genuíno.
 
 **Outros envios**: 1 frame anotado por segundo em `POST /api/cameras/:id/frame` (JPEG) e
 métricas a cada frame em lote a cada 5 s (`mode, inference_ms, rtt_ms, payload_bytes, fallback`).
@@ -242,7 +247,7 @@ config(id INTEGER PK CHECK(id=1), json TEXT)
 
 Regras:
 - `deposit` → cria sessão `parked` para a vaga (se já houver uma aberta, fecha a antiga como órfã).
-- `withdrawal` → busca sessão `parked` da vaga, calcula o máximo do cosine entre os pares; `similarity < threshold` ou rosto ausente → `alert`, senão `ok`.
+- `withdrawal` → busca sessão `parked` da vaga, calcula o cosine entre os templates (`setSimilarity`); `similarity < threshold` ou rosto ausente → `alert`, senão `ok`.
   **Depois de comparar, apagar os embeddings** (`deposit_embeddings = NULL`) — LGPD.
 - Retenção: fotos de sessões `ok` apagadas após `RETENTION_HOURS` (default 24). Implementar como limpeza no boot + setInterval.
 
@@ -266,7 +271,7 @@ Config default:
   "occupancy_threshold": 0.25, "debounce_seconds": 3, "face_window_seconds": 15,
   "bike_min_conf": { "yolo26": 0.25, "rfdetr": 0.5 },
   "occupied_ratio": 0.7, "empty_ratio": 0.2, "face_min_score": 0.5, "face_min_px": 20, "top_k": 5,
-  "similarity_threshold": 0.30, "retention_hours": 24, "timeout_ms": 2000
+  "similarity_threshold": 0.38, "retention_hours": 24, "timeout_ms": 2000
 }
 ```
 
@@ -403,6 +408,7 @@ dispositivo exceto em eventos. Em produção: sinalização no local, base legal
     A decisão real usa o máximo dos pares, que mediu **0.32–0.34** (mesma pessoa) contra **0.15**
     (pessoas diferentes). `similarity_threshold` foi de 0.30 para **0.23**. A margem é estreita e
     há só 2 pessoas na amostra — recalibrar com mais gente. Histograma em `samples/calibracao.png`.
+    *(Superado na entrada seguinte: o máximo dos pares foi trocado pelo template e o limiar por 0.38.)*
   - **Rostos**: 73 rostos válidos nos 129 frames amostrados, score médio 0.65, lado médio **42 px**
     (mín 22, máx 55) — coerente com o previsto no §4.1 para o ângulo frontal.
   - **Agente em arquivo de vídeo rodava em câmera lenta.** Consumia um frame por iteração, então um
@@ -417,3 +423,45 @@ dispositivo exceto em eventos. Em produção: sinalização no local, base legal
     permitiria, não o ritmo real de captura. Passou a ser `frames / (último_ts − primeiro_ts)`,
     com `first_ts`/`last_ts` novos no resumo de `/api/metrics`.
   - **As cinco páginas foram verificadas no navegador** (headless Chrome), não só pelo build.
+
+- **2026-09-20 — `a_verdade` / `a_mentira`: o limiar facial quase não separava.**
+  Com o sistema antigo (buffalo_s + **máximo** dos pares) a sessão honesta deu 0.354 e a
+  fraudulenta 0.301 — margem de 0.053, ou seja, nenhum limiar seguro. Diagnóstico e correção,
+  medidos nos dois vídeos (3 comparações genuínas × 3 impostoras, 2 atores):
+
+  | agregador | buffalo_s | buffalo_l |
+  |---|---|---|
+  | máximo dos pares (antigo) | +0.086 | +0.214 |
+  | mediana dos pares | +0.159 | +0.172 |
+  | **template (média dos embeddings)** | +0.117 | **+0.288** |
+
+  (o número é a margem: menor genuíno − maior impostor.)
+
+  - **O máximo era o pior agregador.** Ele pega o melhor de até 25 pares, então basta um par
+    com sorte para o impostor subir; a média cancela o ruído de frame em vez de amplificá-lo —
+    e é ela que de fato protege contra o "frame ruim" que o §6 queria evitar. `similarity.ts`
+    passou a usar `setSimilarity` (cosseno entre os templates), com `maxPairwise` mantido só
+    para comparação offline.
+  - **O pacote de modelos pesa mais que o agregador.** `INSIGHTFACE_PACK` (novo) escolhe o
+    pacote. **Decisão: `buffalo_l` (SCRFD-10G + ResNet50, 300 MB) é o default.** Custo:
+    **101 ms/frame** contra 45 ms na GPU — tranquilo a 3 FPS, e a 3 FPS o orçamento é 333 ms.
+    `buffalo_s` (SCRFD-500M + MobileFaceNet, 16 MB) fica como alternativa para CPU fraca; na
+    CPU do Pi o buffalo_l provavelmente não fecha, então lá é `buffalo_s` **ou** a inferência
+    no fog/cloud — mais um argumento para o rosto não rodar no edge.
+  - `similarity_threshold` default passou para **0.38** (template + buffalo_l); com
+    `buffalo_s`, baixe para **0.31**. Trocar o pacote OU o agregador muda a escala do cosseno:
+    recalibrar sempre.
+  - Verificado ponta a ponta: `a_verdade` → `ok`, `a_mentira` → `alert low_similarity`, nas
+    duas configurações (0.405 × 0.254 com buffalo_s; 0.525 × 0.237 com buffalo_l).
+  - **Sinal de roupa medido, mas a amostra é fácil demais para confiar.** Correlação de
+    histograma HSV do tronco: mesma pessoa 0.77–0.95, pessoas diferentes ≈ 0.00 (margem 0.78,
+    muito melhor que o rosto). Só que os dois atores vestem camiseta magenta e camiseta branca —
+    qualquer histograma separa isso. Não há no conjunto nenhum caso difícil (duas pessoas de
+    branco, ou a mesma pessoa tirando um casaco), então o número é otimista e **não** sustenta
+    trocar rosto por roupa.
+    **Decisão: roupa/corpo fica de fora por ora — o sistema é só rosto.** Reavaliar quando
+    houver vídeo do caso difícil; aí o caminho é um ReID de verdade (OSNet / CLIP-ReID) como
+    segundo sinal que desempata o rosto, nunca como substituto.
+  - **Amostra ainda é pequena: 2 atores.** Com duas pessoas qualquer sistema parece bom. Filmar
+    4–5 pessoas depositando e retirando e rodar o `calibrate.py` continua sendo o que falta
+    para o limiar deixar de ser um ponto no meio de dois números.

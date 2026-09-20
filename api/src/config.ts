@@ -31,10 +31,11 @@ export const DEFAULT_CONFIG = {
   face_min_score: 0.5,
   face_min_px: 20,
   top_k: 5,
-  // scripts/calibrate.py nos videos de samples/: 97 pares genuinos x 56 impostores sugerem
-  // 0.18 par a par. A decisao real usa o MAXIMO dos pares, que mediu 0.32-0.34 (mesma pessoa)
-  // contra 0.15 (pessoas diferentes) -- 0.23 fica no meio. Recalibrar com mais gente.
-  similarity_threshold: 0.23,
+  // Vale para o par (template, buffalo_l), que e o default. Medido em samples/:
+  // genuinos 0.525-0.710 x impostores 0.089-0.237. Com INSIGHTFACE_PACK=buffalo_s
+  // (genuinos 0.371-0.510 x impostores 0.101-0.254) baixe para ~0.31. Recalibrar
+  // sempre que trocar o pacote de modelos OU o agregador: a escala muda.
+  similarity_threshold: 0.38,
   retention_hours: 24,
   timeout_ms: 2000,
 };

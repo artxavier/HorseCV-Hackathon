@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { getConfig } from "../config.js";
 import { db, type SessionRow } from "../db.js";
 import { deleteFile, saveJpgB64 } from "../images.js";
-import { maxPairwise } from "../similarity.js";
+import { setSimilarity } from "../similarity.js";
 
 interface EventBody {
   type: "deposit" | "withdrawal";
@@ -81,7 +81,7 @@ function handleWithdrawal(cameraId: string, body: EventBody, ts: number, embeddi
   const cfg = getConfig();
   const threshold = Number(cfg.similarity_threshold) || 0.3;
   const depositEmb: number[][] = session.deposit_embeddings ? JSON.parse(session.deposit_embeddings) : [];
-  const similarity = maxPairwise(depositEmb, embeddings);
+  const similarity = setSimilarity(depositEmb, embeddings);
 
   let status: "ok" | "alert" = "ok";
   let reason: string | null = null;
