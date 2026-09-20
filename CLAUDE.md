@@ -357,3 +357,27 @@ dispositivo exceto em eventos. Em produção: sinalização no local, base legal
 ## Decisões tomadas
 
 <!-- Claude Code: registre aqui decisões que não estavam especificadas acima. -->
+
+- **2026-09-20 — Implementação inicial (vision + api + web, passos 1–6 do §10).**
+  Pesos COCO pré-treinados, sem fine-tuning. Quando os pesos com fine-tuning chegarem,
+  basta apontar `YOLO_WEIGHTS` (ou `model_path`) para o novo `.pt`: o resto do pipeline não muda.
+- **Ambos os detectores implementados e validados.** `DETECTOR=yolo26|rfdetr` no servidor de
+  inferência, e a config tem um detector por modo (`detector.edge=yolo26`, `fog`/`cloud`=`rfdetr`).
+  O `class_id` do `rfdetr` 1.10.1 é **1-indexado** em relação a `model.class_names` (person=1, bicycle=2);
+  o pacote não tem mais `rfdetr.util.coco_classes`.
+- **Rostos: insightface 2.0 (`buffalo_s`) instalou sem problema no Python 3.12** — não foi preciso o
+  fallback. Ele continua em `faces.py` como `FACE_BACKEND=opencv` (YuNet + SFace), com embedding de 128-d
+  em vez de 512-d, então o limiar precisa ser recalibrado se alguém trocar.
+- **PYTHONPATH do ROS.** Se o shell tiver `/opt/ros/.../site-packages` no `PYTHONPATH`, ele entra **antes**
+  da venv e sombreia numpy/opencv. Use `vision/run_inference.sh` (que faz `env -u PYTHONPATH`) ou rode
+  `env -u PYTHONPATH .venv/bin/python -m agent.main ...`.
+- **Status `orphan`.** Além de `parked|ok|alert`, uma sessão vira `orphan` quando chega um novo depósito
+  numa vaga que já tinha sessão aberta (a retirada nunca foi vista). Sem isso a sessão antiga ficaria
+  `parked` para sempre e travaria a vaga.
+- **`slot_ids` na config** só alimenta a grade do Dashboard. A verdade sobre as vagas continua em
+  `vision/config/slots.json` (hoje um exemplo de 6 colunas — refazer com `scripts/annotate_slots.py`
+  quando as fotos reais estiverem anotadas).
+- **Métrica no fallback**: o campo `mode` guarda onde a inferência **realmente** rodou (`edge`), e
+  `fallback=1` marca que o modo escolhido falhou. A página de Métricas mostra a % de fallback.
+- **Pesos fora do repositório**: `yolo26n-seg.pt` em `vision/models/`, RF-DETR em `~/.roboflow/models/`,
+  buffalo_s em `~/.insightface/models/`. `vision/samples/` é a única pasta de imagens versionada.

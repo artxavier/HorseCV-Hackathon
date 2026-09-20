@@ -9,6 +9,8 @@ export const DEFAULT_CONFIG = {
     cloud: "https://bikeguard.example.run.app",
   },
   detector: { edge: "yolo26", fog: "rfdetr", cloud: "rfdetr" },
+  // so para a grade do Dashboard; a verdade sobre as vagas esta em vision/config/slots.json
+  slot_ids: ["S1", "S2", "S3", "S4", "S5", "S6"],
   target_fps: 3,
   jpeg_quality: 75,
   infer_width: 640,
