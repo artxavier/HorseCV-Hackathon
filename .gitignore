@@ -1,1 +1,50 @@
-#
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.horsecv/
+
+# ---- pesos de modelos (baixados por scripts/download_models.sh) ----
+vision/models/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.param
+*.bin
+
+# ---- YOLO datasets e runs ----
+datasets/
+dataset/
+runs/
+
+# ---- Node ----
+node_modules/
+dist/
+*.tsbuildinfo
+
+# ---- dados da api (SQLite + fotos) ----
+api/data/
+
+# ---- midia ----
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.tif
+*.tiff
+*.mp4
+*.avi
+*.mov
+
+# ---- excecao: material real do bicicletario vai para o repo ----
+!vision/samples/
+!vision/samples/**
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/
