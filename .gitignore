@@ -1,1 +1,22 @@
-#
+# YOLO datasets and generated runs
+datasets/
+dataset/
+data/
+runs/
+*.pt
+*.pth
+
+# Image files used by training and inference
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.tif
+*.tiff
+
+# Python virtual environments
+.venv/
+venv/
+env/
+.horsecv/
