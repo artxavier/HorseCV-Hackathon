@@ -35,36 +35,20 @@ atrás da bike empurrando-a *em direção à câmera* — ou seja, olha para a l
 que importam (chegada e retirada). Os polígonos das vagas ficam em `vision/config/slots.json`,
 normalizados em [0..1].
 
+![Exemplo](docs/assets/frame.jpg)
+
 ```mermaid
 stateDiagram-v2
     direction LR
     [*] --> EMPTY
     EMPTY --> OCCUPIED: ≥70% → deposit
     OCCUPIED --> EMPTY: ≤20% → withdrawal
-    EMPTY --> EMPTY: 20–70%: mantém
-    OCCUPIED --> OCCUPIED: 20–70%: mantém
 ```
 
 Os percentuais são a fração dos frames da janela de 3 s em que alguma bicicleta cobriu ≥25% da vaga.
 
 
-A histerese (70% para ocupar, 20% para liberar) existe porque o detector **erra**: em 32 fotos
-reais o YOLO26n-seg não viu bicicleta nenhuma em 14 delas. Um simples "tem bike neste frame"
-faria a vaga piscar e geraria eventos falsos aos pares.
-
-Três decisões que definem o resto do sistema:
-
-1. **Só a inferência muda de lugar.** Captura, ocupação e máquina de estados rodam sempre no
-   dispositivo. O mesmo servidor de inferência, com o mesmo contrato HTTP, roda em três lugares
-   (edge / fog / cloud) e o agente escolhe a URL conforme o modo configurado no site.
-2. **O detector de rosto nunca vê o frame inteiro.** Os rostos nessa cena têm 20–45 px. O SCRFD
-   redimensiona a entrada para 640 e os apagaria. O pipeline obrigatório é recortar a pessoa
-   primeiro (detalhado abaixo).
-3. **A comparação usa vários rostos de cada lado.** Cada lado vira um *template* — a média dos
-   até 5 embeddings normalizados — e a similaridade é um único cosseno entre os dois templates.
-   Assim um frame ruim (cabeça baixa ao encaixar a bike, borrado) é diluído em vez de decidir
-   sozinho. (Era o máximo entre todos os pares; medido nos vídeos, o máximo separava mal — um
-   único par com sorte puxava o impostor para cima.)
+A histerese (70% para ocupar, 20% para liberar) existe porque para cada estado a métrica mais importante muda, falsos-positivos são ruins para o estado *EMPTY*; já para o estado *OCCUPIED*, falsos-negativos.
 
 ---
 
@@ -85,36 +69,15 @@ flowchart LR
         CLOUD["CLOUD<br/>container HTTPS<br/>rfdetr-seg-nano"]
     end
 
-    AGENT -->|"POST /infer<br/>multipart JPEG da ROI"| EDGE
-    AGENT -->|"POST /infer"| FOG
-    AGENT -->|"POST /infer"| CLOUD
+    AGENT -->|"POST /infer"| INF
 
-    subgraph FIXO["Laptop da equipe"]
-        API["api<br/>Fastify + SQLite"]
-        WEB["web<br/>React + Vite"]
+    subgraph FIXO["API"]
+        API["Fastify + SQLite"]
+        WEB["React + Vite"]
     end
 
-    AGENT -->|"POST /api/events<br/>POST /api/metrics<br/>POST /api/cameras/:id/frame"| API
-    API -->|"GET /api/config<br/>(polling 5 s)"| AGENT
-    WEB <-->|"REST, polling 1–2 s"| API
+    INF -->|"Event" | API
 ```
-
-### Quem fala com quem
-
-| Chamada | De → para | Quando | Payload |
-|---|---|---|---|
-| `POST /infer?faces=true` | agent → inferência | todo frame (~3 FPS) | multipart, JPEG da ROI em **resolução nativa** (~120 KB) |
-| `GET /health` | agent → inferência | no boot e a cada troca de modo | — |
-| `GET /api/config` | agent → api | polling a cada 5 s | — |
-| `POST /api/events` | agent → api | só nas transições de vaga | `deposit` / `withdrawal` com até 5 embeddings + 2 JPEGs em base64 |
-| `POST /api/metrics` | agent → api | lote a cada 5 s | `mode, inference_ms, rtt_ms, payload_bytes, fallback` por frame |
-| `POST /api/cameras/:id/frame` | agent → api | 1×/s | JPEG anotado (`Content-Type: image/jpeg`) |
-| `GET /api/slots`, `/api/alerts?open=1`, `/api/metrics?since=` | web → api | polling 1–2 s | — |
-| `PUT /api/config` | web → api | ao trocar o modo em Configurações | JSON parcial (merge) |
-
-O agente **não recebe comandos**: ele só lê a config por polling. Trocar Edge → Fog no site
-grava a config no SQLite, e no próximo poll (≤5 s) o agente passa a mandar os frames para outra
-URL. É o momento "uau" da demo, e não precisou de WebSocket.
 
 ### Fallback
 
@@ -133,32 +96,25 @@ sequenceDiagram
     A->>API: métrica { mode: "edge", fallback: 1 }
 ```
 
-O campo `mode` da métrica guarda onde a inferência **realmente** rodou; `fallback=1` marca que o
-modo escolhido falhou. A página de Métricas mostra a % de fallback, então derrubar o fog ao vivo
-é uma demonstração de resiliência e não um acidente.
+Caso o *FOG/CLOUD* não respondam, a inferência usa um fallback, continuando o processamento em *EDGE*.
 
 ---
 
 ## Pipeline de processamento
 
-### Dentro do servidor de inferência (stateless — todo estado fica no agente)
+### Dentro do servidor de inferência (Stateless)
 
 ```mermaid
 flowchart TB
-    IMG["JPEG da ROI<br/>resolução nativa"] --> DET["detector<br/>yolo26n-seg | rfdetr-seg-nano<br/>classes COCO: person, bicycle"]
+    IMG["JPEG da ROI<br/>resolução nativa"] --> DET["detector<br/>yolo26n-seg | rfdetr-seg-nano"]
     DET --> BIKES["bikes[]<br/>bbox + conf + polygon da máscara"]
-    DET --> PERS["persons[]<br/>bbox + conf"]
-    PERS --> CROP["recorta os 45% superiores da bbox<br/><b>do frame original</b>"]
-    CROP --> UP["upscale até 640 no maior lado<br/>INTER_CUBIC"]
+    DET --> CROP["recorta os 45% superiores da bbox PERSON do frame original</b>"]
+    CROP --> UP["upscale até 640px <br/>INTER_CUBIC"]
     UP --> SCRFD["SCRFD-500M<br/>score ≥ 0.5 e lado ≥ 20 px<br/>medidos no frame original"]
     SCRFD --> EMB["MobileFaceNet → embedding 512-d<br/>L2-normalizado + crop_jpg_b64"]
     BIKES --> RESP["resposta JSON"]
     EMB --> RESP
 ```
-
-O crop + upscale não é detalhe de performance: no teste com fotos reais ele subiu a similaridade
-mínima entre fotos da mesma pessoa de **0.05 para 0.21**. Rodar o SCRFD no frame inteiro
-simplesmente não encontra esses rostos.
 
 ### Dentro do agente
 
@@ -184,12 +140,6 @@ flowchart TB
     INFER --> MET["métricas em lote, a cada 5 s"]
 ```
 
-Dois filtros importantes. A **`interaction_zone`** existe porque tem uma calçada logo atrás do
-rack: pessoas ao fundo são detecções *corretas*, mas não são clientes da vaga — só contam
-pessoas cujos pés caem entre a linha do rack e a borda da calçada. E a **janela de 15 s começando
-antes da transição** existe porque ao encaixar a bike a pessoa olha para baixo; o melhor rosto
-costuma ser o da chegada.
-
 ### Dentro da api, quando chega um evento
 
 ```mermaid
@@ -209,10 +159,6 @@ flowchart TB
     OK --> LGPD
     LGPD --> RET["fotos de ok/orphan apagadas<br/>após retention_hours"]
 ```
-
-A precedência dos motivos é `no_face_deposit` → `no_face_withdrawal` → `low_similarity`:
-"não consegui ver o rosto" é uma informação diferente de "o rosto não bate", e a portaria
-precisa saber qual das duas aconteceu.
 
 ---
 
@@ -358,73 +304,6 @@ O `calibrate.py` mede os cossenos de pares da mesma pessoa (genuínos) e de pess
 `samples/calibracao.png` é o resultado com as duas pessoas filmadas até agora, e vai para a
 apresentação.
 
-### Testando a inferência sozinha
-
-```bash
-curl -F image=@vision/samples/frame.jpg 'http://localhost:8001/infer?faces=true&detector=rfdetr'
-curl http://localhost:8001/health
-```
-
-### Limpar o banco de dados
-
-Tudo que a api guarda vive em **`api/data/`** — nada fica em outro lugar:
-
-```
-api/data/
-├── bikeguard.db        # sessões, alertas, eventos, métricas, config
-├── bikeguard.db-wal    # ← journal do SQLite; conta como parte do banco
-├── bikeguard.db-shm    # ←
-├── faces/              # os recortes de rosto (servidos em /files/)
-└── frames/             # o último frame anotado de cada câmera
-```
-
-**Pare a api antes de apagar.** O `better-sqlite3` mantém o arquivo aberto: se você apagar com o
-servidor no ar, o processo continua escrevendo no arquivo já removido, a api parece funcionar e as
-fotos novas somem sem erro nenhum. Não é hipotético — foi assim que apareceu um alerta sem foto
-durante os testes.
-
-Apagar tudo e começar do zero:
-
-```bash
-# 1. pare a api (Ctrl+C no terminal dela)
-cd api && npm run reset     # equivale a: rm -rf data
-npm run dev                 # o schema é recriado sozinho no boot
-```
-
-Se preferir limpar só as tabelas e manter o arquivo (precisa do `sqlite3` instalado):
-
-```bash
-cd api
-sqlite3 data/bikeguard.db "DELETE FROM sessions; DELETE FROM alerts; DELETE FROM events; DELETE FROM metrics;"
-rm -f data/faces/*.jpg data/frames/*.jpg
-```
-
-Note que isso **preserva a config** (a tabela `config`), que é o que você costuma querer: zerar o
-histórico da demo sem perder modo, URLs e limiares. Para zerar a config também, acrescente
-`DELETE FROM config;` — ela volta aos defaults do `api/src/config.ts` na próxima leitura.
-
-Limpezas mais cirúrgicas, com a api no ar:
-
-```bash
-# só as métricas (o gráfico fica poluído depois de muitos testes)
-sqlite3 api/data/bikeguard.db "DELETE FROM metrics;"
-
-# só marcar os alertas abertos como verificados, sem apagar nada
-curl -X POST http://localhost:3000/api/alerts/<id>/ack
-```
-
-A api também faz uma limpeza automática sozinha: fotos de sessões `ok` e `orphan` mais velhas que
-`retention_hours` (24 h por padrão) são apagadas no boot e de hora em hora. Isso é a retenção da
-LGPD, não um substituto para o reset — sessões `alert` são preservadas.
-
-### Modo cloud
-
-```bash
-docker build -f vision/Dockerfile.inference -t bikeguard-inference vision/
-# suba em qualquer provedor que aceite container (Cloud Run, Container Apps, App Runner)
-# e cole a URL em Configurações → inference_urls.cloud
-```
-
 ---
 
 ## Flags e variáveis de ambiente
@@ -444,57 +323,6 @@ docker build -f vision/Dockerfile.inference -t bikeguard-inference vision/
 Tudo o mais — modo, URLs, FPS alvo, ROI, limiares, `top_k`, `timeout_ms` — vem do
 `GET /api/config` e é editável na página **Configurações**, sem reiniciar o agente.
 
-### `scripts/annotate_slots.py`
-
-| Flag | Default | O que faz |
-|---|---|---|
-| `--source` | `0` | Webcam ou imagem/vídeo de onde tirar o frame de referência. |
-| `--out` | `config/slots.json` | Onde salvar. **Sobrescreve** o arquivo. |
-| `--camera` | `cam1` | Vai gravado no JSON. |
-
-Teclas: clique adiciona um vértice · `n` fecha a vaga atual e começa a próxima ·
-`i` marca o polígono como `interaction_zone` · `z` desfaz o último vértice ·
-`r` recomeça · `s` salva · `q` sai sem salvar.
-
-### `scripts/calibrate.py`
-
-| Flag | Default | O que faz |
-|---|---|---|
-| `--dir` | **obrigatório** | Pasta com **uma subpasta por pessoa** (`pessoas/ana/*.jpg`, `pessoas/bruno/*.jpg`). Pares dentro da mesma subpasta são genuínos; entre subpastas, impostores. |
-| `--out` | `calibracao.png` | PNG com os dois histogramas e o limiar sugerido. |
-| `--detector` | `rfdetr` | `yolo26` ou `rfdetr`, para achar as pessoas nas fotos. |
-| `--face-backend` | do ambiente | `insightface` (512-d) ou `opencv` (128-d). Trocar o backend **invalida o limiar** — os espaços de embedding são diferentes. |
-| `--face-min-score` | `0.5` | Score mínimo do detector de rosto. |
-| `--face-min-px` | `20` | Lado mínimo do rosto, medido no frame original. |
-
-### Servidor de inferência — variáveis de ambiente
-
-| Variável | Default | O que faz |
-|---|---|---|
-| `PORT` / `HOST` | `8001` / `0.0.0.0` | Lidas pelo `run_inference.sh`. |
-| `DETECTOR` | `yolo26` | Detector padrão do processo. Use `rfdetr` no fog/cloud. A query `?detector=` sobrepõe por requisição. |
-| `YOLO_WEIGHTS` | `models/yolo26n-seg.pt` | **É aqui que entram os pesos com fine-tuning.** Aponte para o novo `.pt` e nada mais no pipeline muda. |
-| `MODELS_DIR` | `vision/models` | Onde procurar os pesos locais. |
-| `FACE_BACKEND` | `insightface` | `opencv` cai para YuNet + SFace (128-d), que vem no próprio opencv-python. Só use se o insightface não instalar. |
-| `INSIGHTFACE_PACK` | `buffalo_l` | Pacote de modelos de rosto. `buffalo_l` (SCRFD-10G + ResNet50, 300 MB) é o padrão: quase **triplica** a separação entre a pessoa certa e a errada, ao custo de 101 ms/frame contra 45 ms na GPU. Em CPU fraca use `buffalo_s` (16 MB) — e **baixe o `similarity_threshold` para 0.31**, porque a escala do cosseno muda com o pacote. |
-| `DEVICE` | auto | `cpu`, `cuda`, `cuda:0`. |
-| `DEVICE_LABEL` | auto | Texto que aparece no `/health` e nas métricas (ex. `rpi5-cpu`, `laptop-cuda`). É o que identifica o modo nos gráficos da apresentação. |
-
-Query params do `POST /infer`: `faces` (default `true`), `detector`, `bike_conf` (`0.25`),
-`person_conf` (`0.4`), `imgsz` (`640`), `face_min_score` (`0.5`), `face_min_px` (`20`).
-
-### api e web
-
-| Variável | Default | Onde |
-|---|---|---|
-| `PORT` / `HOST` | `3000` / `0.0.0.0` | api |
-| `DATA_DIR` | `api/data` | api — banco e imagens |
-| `VITE_API_TARGET` | `http://localhost:3000` | web — alvo do proxy `/api` e `/files` |
-
-Scripts npm: `npm run dev` (watch), `npm start` (api, sem watch), `npm run reset` (api, apaga
-`data/` — ver [Limpar o banco de dados](#limpar-o-banco-de-dados)), `npm run build` /
-`npm run preview` (web), `npm run typecheck` (ambos).
-
 ---
 
 ## Privacidade (LGPD)
@@ -511,42 +339,3 @@ Biometria é dado pessoal sensível (LGPD art. 5º II / art. 11). O que o MVP fa
 - Em produção faltariam sinalização no local, base legal e a política de retenção da universidade.
 
 ---
-
-## Estado atual
-
-Implementado e verificado: passos 1–6 do §10 do `CLAUDE.md` (inferência, agente, api, web,
-troca de modo com fallback, métricas), testado ponta a ponta com os vídeos reais do bicicletário
-em `vision/samples/`.
-
-**Cenário completo, em vídeo real** (P1 estaciona → P1 retira, mesma vaga S3):
-
-```
-[DEPOSIT]    vaga=S3  rostos=5  → sessão parked
-[WITHDRAWAL] vaga=S3  rostos=5  → similaridade 0.340  → ok, sem alerta
-```
-
-E com a pessoa errada retirando (P1 deixou, P2 levou): similaridade **0.151** → `alert`
-`low_similarity`, com as duas fotos na Portaria.
-
-| | |
-|---|---|
-| Detector, 129 frames dos 3 vídeos | **rfdetr**: bike em 96% dos frames, conf 0.81, 43 ms · **yolo26**: 55%, conf 0.58, 24 ms |
-| Rostos | 73 válidos, score médio 0.65, lado médio **42 px** (22–55) |
-| Cobertura da vaga com a bike estacionada | 0.30–0.41 na vaga certa, 0.00 nas outras (limiar 0.25) |
-| Agente | 45 ms de inferência, 51 ms de RTT, **138 KB/frame** (~0.41 MB/s a 3 FPS) |
-| Fallback com o fog derrubado | 41/41 frames refeitos no edge, `fallback_pct` 100 |
-| Limiar facial (template + buffalo_l, o padrão) | genuínos 0.525–0.710 × impostores 0.089–0.237 → `similarity_threshold` **0.38** |
-| Limiar facial (template + buffalo_s) | genuínos 0.371–0.510 × impostores 0.101–0.254 → limiar **0.31** |
-
-**O modo edge não fecha com os pesos COCO.** O YOLO26n-seg perde a bicicleta em 45% dos frames,
-a vaga nunca alcança os 70% da janela de debounce e **nenhum evento é emitido**. Subir para
-`imgsz=960` com `bike_conf=0.15` faz os eventos saírem, mas nos instantes errados. Por isso
-`detector.edge` está em `rfdetr` por enquanto — é este o problema que os pesos com fine-tuning
-precisam resolver.
-
-Faltando:
-
-- **Recalibrar o limiar com mais gente.** A amostra tem 2 pessoas; a separação entre genuínos e
-  impostores é estreita (histograma em `vision/samples/calibracao.png`).
-- **Refazer o `slots.json` se a câmera for remontada** — a geometria atual é a dos vídeos.
-- Passos 7 (deploy cloud) e 8 (export NCNN/TensorRT) continuam fora.

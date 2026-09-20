@@ -90,7 +90,7 @@ class YoloDetector(BaseDetector):
     config) para o novo .pt. Nada mais no pipeline muda.
     """
 
-    DEFAULT_WEIGHTS = "yolo26n-seg.pt"
+    DEFAULT_WEIGHTS = "person_bicycle.pt"
 
     @classmethod
     def _default_weights(cls) -> str:
